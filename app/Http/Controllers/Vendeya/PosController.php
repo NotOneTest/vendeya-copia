@@ -104,6 +104,12 @@ class PosController extends Controller
     {
         $data = $request->all();
         $documentType = $data['document_type'] ?? 'nv';
+        $paymentMethod = $data['payment_method'] ?? '01';
+        
+        // Si es vale como FORMA DE PAGO (no como tipo de documento)
+        if ($paymentMethod === '05') {
+            return $this->processVoucherPayment($data);
+        }
         
         if ($documentType === 'vale') {
             return $this->createValeSale($data);
@@ -401,7 +407,258 @@ class PosController extends Controller
 
     private function createValeSale($data)
     {
-        return response()->json(['success' => false, 'error' => 'Vale sale not implemented'], 501);
+        try {
+            $customerId = $data['customer_id'] ?? null;
+            $customerDoc = $data['customer_doc'] ?? '';
+            $total = floatval($data['total'] ?? 0);
+            $items = $data['items'] ?? [];
+            
+            if (!$customerId && !$customerDoc) {
+                return response()->json(['success' => false, 'error' => 'Cliente no especificado'], 400);
+            }
+            
+            // Obtener datos del cliente
+            $customerData = $this->getCustomerDataFromId($customerId);
+            $customerName = $customerData['name'] ?? 'Cliente';
+            $customerNumber = $customerData['number'] ?? $customerDoc;
+            
+            // Crear el vale en MiEmpresa (similar a una nota de venta)
+            $voucherData = [
+                'document_type' => 'vale',
+                'serie' => $data['serie'] ?? 'V001',
+                'customer_id' => $customerId,
+                'customer_doc' => $customerNumber,
+                'customer_name' => $customerName,
+                'amount' => $total,
+                'items' => $items,
+                'observation' => 'Vale emitido desde Vendeya POS',
+            ];
+            
+            Log::info('Creating voucher in MiEmpresa', ['data' => $voucherData]);
+            
+            $response = $this->miEmpresaApi->createVoucher($voucherData);
+            
+            if (isset($response['success']) && $response['success']) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Vale emitido correctamente en MiEmpresa',
+                    'data' => $response
+                ]);
+            }
+            
+            return response()->json([
+                'success' => false,
+                'error' => $response['error'] ?? 'Error al crear el vale en MiEmpresa'
+            ], 400);
+            
+        } catch (\Exception $e) {
+            Log::error('Error creating vale sale: ' . $e->getMessage());
+            return response()->json(['success' => false, 'error' => 'Error interno: ' . $e->getMessage()], 500);
+        }
+    }
+    
+    private function processVoucherPayment($data)
+    {
+        try {
+            $customerId = $data['customer_id'] ?? null;
+            $customerDoc = $data['customer_doc'] ?? '';
+            $total = floatval($data['total'] ?? 0);
+            $items = $data['items'] ?? [];
+            
+            if (!$customerId && !$customerDoc) {
+                return response()->json(['success' => false, 'error' => 'Cliente no especificado'], 400);
+            }
+            
+            // Obtener número de documento del cliente
+            if (!$customerDoc) {
+                $customerData = $this->getCustomerDataFromId($customerId);
+                $customerDoc = $customerData['number'] ?? '';
+            }
+            
+            if (empty($customerDoc)) {
+                return response()->json(['success' => false, 'error' => 'Número de documento del cliente no encontrado'], 400);
+            }
+            
+            // Consultar saldo del vale
+            Log::info('Checking voucher balance for customer', ['doc' => $customerDoc]);
+            $balanceResponse = $this->miEmpresaApi->getVoucherBalance($customerDoc);
+            
+            if (!isset($balanceResponse['success']) || !$balanceResponse['success']) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'Error al consultar saldo del vale: ' . ($balanceResponse['error'] ?? 'Error desconocido')
+                ], 400);
+            }
+            
+            $balance = floatval($balanceResponse['balance'] ?? $balanceResponse['data']['balance'] ?? 0);
+            
+            Log::info('Voucher balance check', ['customer_doc' => $customerDoc, 'balance' => $balance, 'total' => $total]);
+            
+            if ($balance < $total) {
+                return response()->json([
+                    'success' => false,
+                    'error' => "Saldo insuficiente. Saldo disponible: S/ " . number_format($balance, 2) . ", Total a pagar: S/ " . number_format($total, 2)
+                ], 400);
+            }
+            
+            // Obtener voucher_id del cliente (asumiendo que tiene uno activo)
+            $vouchersResponse = $this->miEmpresaApi->getVouchersByCustomer($customerDoc);
+            $voucherId = null;
+            
+            if (isset($vouchersResponse['data']) && is_array($vouchersResponse['data'])) {
+                // Buscar el primer vale activo
+                foreach ($vouchersResponse['data'] as $voucher) {
+                    if (($voucher['status'] ?? '') !== 'used') {
+                        $voucherId = $voucher['id'] ?? null;
+                        break;
+                    }
+                }
+            }
+            
+            if (!$voucherId) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'No se encontró un vale activo para este cliente'
+                ], 400);
+            }
+            
+            // Descontar del vale
+            Log::info('Discounting from voucher', ['voucher_id' => $voucherId, 'amount' => $total]);
+            $discountResponse = $this->miEmpresaApi->discountVoucher($voucherId, $total);
+            
+            if (!isset($discountResponse['success']) || !$discountResponse['success']) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'Error al descontar del vale: ' . ($discountResponse['error'] ?? 'Error desconocido')
+                ], 400);
+            }
+            
+            // Crear el documento de venta (nota de venta o boleta)
+            $documentType = $data['document_type'] ?? 'nv';
+            $data['payment_method'] = '05'; // Vale de Venta
+            
+            // Generar la venta normal pero con forma de pago vale
+            return $this->createSaleWithVoucherPayment($data, $customerDoc, $total, $items);
+            
+        } catch (\Exception $e) {
+            Log::error('Error processing voucher payment: ' . $e->getMessage());
+            return response()->json(['success' => false, 'error' => 'Error interno: ' . $e->getMessage()], 500);
+        }
+    }
+    
+    private function createSaleWithVoucherPayment($data, $customerDoc, $total, $items)
+    {
+        // Aquí creamos el comprobante (nota de venta) que viaja a MiEmpresa
+        $now = now();
+        $fechaEmision = $now->format('Y-m-d');
+        $horaEmision = $now->format('H:i:s');
+        
+        $customerData = $this->getCustomerDataFromDoc($customerDoc);
+        
+        $miEmpresaPayload = [
+            'serie_documento' => 'NV01',
+            'numero_documento' => '#',
+            'fecha_de_emision' => $fechaEmision,
+            'hora_de_emision' => $horaEmision,
+            'codigo_tipo_operacion' => '0101',
+            'codigo_tipo_documento' => '80', // Nota de venta
+            'codigo_tipo_moneda' => 'PEN',
+            'fecha_de_vencimiento' => $fechaEmision,
+            'datos_del_cliente_o_receptor' => [
+                'codigo_tipo_documento_identidad' => $customerData['identity_document_type_id'] ?? '1',
+                'numero_documento' => $customerDoc,
+                'apellidos_y_nombres_o_razon_social' => $customerData['name'] ?? 'CLIENTE',
+                'codigo_pais' => 'PE',
+                'direccion' => $customerData['address'] ?? 'Av. Principal',
+                'correo_electronico' => $customerData['email'] ?? '',
+            ],
+            'totales' => [
+                'total_operaciones_gravadas' => round($total, 2),
+                'total_igv' => 0,
+                'total_venta' => round($total, 2),
+            ],
+            'items' => array_map(function($item) {
+                return [
+                    'codigo_interno' => 'P' . str_pad($item['id'] ?? 0, 4, '0', STR_PAD_LEFT),
+                    'descripcion' => $item['name'] ?? 'Producto',
+                    'cantidad' => floatval($item['quantity'] ?? 1),
+                    'valor_unitario' => round(floatval($item['price'] ?? 0), 2),
+                    'precio_unitario' => round(floatval($item['price'] ?? 0), 2),
+                    'total_item' => round(floatval($item['price'] ?? 0) * floatval($item['quantity'] ?? 1), 2),
+                ];
+            }, $items),
+            'pagos' => [
+                [
+                    'fecha_de_emision' => $fechaEmision,
+                    'codigo_metodo_pago' => '05', // Vale de venta
+                    'monto' => round($total, 2),
+                ]
+            ],
+        ];
+        
+        $response = $this->miEmpresaApi->createSaleNote($miEmpresaPayload);
+        
+        if (isset($response['success']) && $response['success']) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Venta realizada con éxito usando vale. Saldo restante: S/ ' . number_format($total, 2),
+                'data' => $response
+            ]);
+        }
+        
+        return response()->json([
+            'success' => false,
+            'error' => $response['error'] ?? 'Error al crear el documento en MiEmpresa'
+        ], 400);
+    }
+    
+    private function getCustomerDataFromDoc($docNumber)
+    {
+        try {
+            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy_miempresa;charset=utf8", "root", "");
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            
+            $stmt = $pdo->prepare("SELECT id, name, number, identity_document_type_id, address FROM persons WHERE number = ? AND type = 'customers' LIMIT 1");
+            $stmt->execute([$docNumber]);
+            $customer = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if ($customer) {
+                return [
+                    'name' => $customer['name'],
+                    'number' => $customer['number'],
+                    'identity_document_type_id' => $customer['identity_document_type_id'] ?? '1',
+                    'address' => $customer['address'] ?? '',
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::error('Error fetching customer data by doc: ' . $e->getMessage());
+        }
+        
+        return ['name' => 'CLIENTE', 'number' => $docNumber, 'identity_document_type_id' => '1', 'address' => ''];
+    }
+    
+    private function getCustomerDataFromId($customerId)
+    {
+        try {
+            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy_miempresa;charset=utf8", "root", "");
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            
+            $stmt = $pdo->prepare("SELECT id, name, number, identity_document_type_id FROM persons WHERE id = ? AND type = 'customers' LIMIT 1");
+            $stmt->execute([$customerId]);
+            $customer = $stmt->fetch(\PDO::FETCH_ASSOC);
+            
+            if ($customer) {
+                return [
+                    'name' => $customer['name'],
+                    'number' => $customer['number'] ?? '',
+                    'identity_document_type_id' => $customer['identity_document_type_id'] ?? '',
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::error('Error fetching customer data: ' . $e->getMessage());
+        }
+        
+        return ['name' => 'Cliente', 'number' => '', 'identity_document_type_id' => ''];
     }
 
     private function getCustomerData($customerId)

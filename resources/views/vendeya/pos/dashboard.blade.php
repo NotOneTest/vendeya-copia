@@ -1018,6 +1018,61 @@ document.addEventListener('DOMContentLoaded', function() {
         customerSelectHidden.value = data.id;
         updateCustomerPreview(data.name, data.doc);
         hideCustomerDropdown();
+        
+        // Consultar saldo del vale automáticamente
+        checkVoucherBalance(data.doc);
+    }
+    
+    function checkVoucherBalance(doc) {
+        if (!doc || /^0+$/.test(doc.replace(/\D/g, ''))) {
+            // Cliente genérico, no tiene vale
+            updateVoucherBalanceDisplay(0, false);
+            return;
+        }
+        
+        fetch('/vendeya/api/vouchers/balance/' + doc, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': '{{ csrf_token() }}'
+            }
+        })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                const balance = parseFloat(result.balance || result.data?.balance || 0);
+                updateVoucherBalanceDisplay(balance, true);
+            } else {
+                updateVoucherBalanceDisplay(0, false);
+            }
+        })
+        .catch(error => {
+            console.error('Error checking voucher balance:', error);
+            updateVoucherBalanceDisplay(0, false);
+        });
+    }
+    
+    function updateVoucherBalanceDisplay(balance, hasVoucher) {
+        let balanceEl = document.getElementById('customerVoucherBalance');
+        if (!balanceEl) {
+            // Crear elemento para mostrar saldo
+            balanceEl = document.createElement('div');
+            balanceEl.id = 'customerVoucherBalance';
+            balanceEl.style.cssText = 'font-size: 12px; margin-top: 5px; padding: 5px; border-radius: 4px;';
+            const customerWrapper = document.querySelector('.customer-combobox-wrapper');
+            if (customerWrapper) {
+                customerWrapper.parentNode.insertBefore(balanceEl, customerWrapper.nextSibling);
+            }
+        }
+        
+        if (hasVoucher && balance > 0) {
+            balanceEl.innerHTML = '<i class="fas fa-ticket-alt"></i> Saldo Vale: <strong>S/ ' + balance.toFixed(2) + '</strong>';
+            balanceEl.style.background = '#d4edda';
+            balanceEl.style.color = '#155724';
+            balanceEl.style.display = 'block';
+        } else {
+            balanceEl.style.display = 'none';
+        }
     }
     
     if (customerSearchInput && customerDropdown) {
