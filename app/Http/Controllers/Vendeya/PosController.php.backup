@@ -1,0 +1,256 @@
+<?php
+
+namespace App\Http\Controllers\Vendeya;
+
+use App\Http\Controllers\Controller;
+use App\Services\VendeyaApiService;
+use App\Services\MiEmpresaApiService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Session;
+
+class PosController extends Controller
+{
+    protected VendeyaApiService $api;
+    protected MiEmpresaApiService $miEmpresaApi;
+
+    public function __construct(VendeyaApiService $api, MiEmpresaApiService $miEmpresaApi)
+    {
+        $this->api = $api;
+        $this->miEmpresaApi = $miEmpresaApi;
+    }
+
+    public function createSale(Request $request)
+    {
+        $data = $request->all();
+        $documentType = $data['document_type'] ?? 'nv';
+        
+        if ($documentType === 'vale') {
+            return $this->createValeSale($data);
+        }
+        
+        $tipoDocumentoMap = [
+            'nv' => '80',
+            'boleta' => '03',
+            'factura' => '01',
+        ];
+        
+        $tipoDocumento = $tipoDocumentoMap[$documentType] ?? '80';
+        
+        $now = now();
+        $fechaEmision = $now->format('Y-m-d');
+        $horaEmision = $now->format('H:i:s');
+        
+        $customerId = $data['customer_id'] ?? 1;
+        $customerData = $this->getCustomerData($customerId);
+        
+        $customerDocType = $customerData['tipo_documento'] ?? '1';
+        $customerDocNumber = $customerData['numero'] ?? '00000000';
+        $customerName = $customerData['nombre'] ?? 'CLIENTES - VARIOS';
+        $customerAddress = $customerData['direccion'] ?? 'Av. Principal';
+        $customerEmail = $customerData['email'] ?? '';
+        
+        if ($tipoDocumento === '01') {
+            $customerDocType = '6';
+            if (strlen($customerDocNumber) !== 11) {
+                $customerDocNumber = '10414711225';
+            }
+        }
+        
+        $items = $data['items'] ?? [];
+        $paymentMethod = $data['payment_method'] ?? '01';
+        $subtotal = 0;
+        $igv = 0;
+        $total = 0;
+        
+        $documentItems = [];
+        $isNotaVenta = ($documentType === 'nv');
+        
+        foreach ($items as $item) {
+            $quantity = floatval($item['quantity'] ?? 1);
+            $unitPrice = floatval($item['price'] ?? 0);
+            $totalItem = $quantity * $unitPrice;
+            
+            if ($isNotaVenta) {
+                $baseGravada = $totalItem;
+                $igvItem = 0;
+            } else {
+                $baseGravada = $totalItem / 1.18;
+                $igvItem = $totalItem - $baseGravada;
+            }
+            
+            $subtotal += $baseGravada;
+            $igv += $igvItem;
+            $total += $totalItem;
+            
+            $documentItems[] = [
+                'item_id' => $item['id'] ?? 1,
+                'item' => [
+                    'id' => $item['id'] ?? 1,
+                    'internal_id' => 'P' . str_pad($item['id'] ?? 0, 4, '0', STR_PAD_LEFT),
+                    'name' => $item['name'] ?? 'Producto',
+                    'unit_type_id' => 'NIU',
+                    'unit_price' => round($unitPrice, 2),
+                ],
+                'quantity' => $quantity,
+                'unit_value' => round($baseGravada / $quantity, 2),
+                'unit_price' => round($unitPrice, 2),
+                'total_value' => round($baseGravada, 2),
+                'total_igv' => round($igvItem, 2),
+                'total' => round($totalItem, 2),
+            ];
+        }
+        
+        Log::info('Total calculation', [
+            'total' => $total,
+            'subtotal' => $subtotal,
+            'igv' => $igv,
+        ]);
+        
+        // Enviar directamente a miempresa (saltamos factreadylite que no funciona)
+        $miEmpresaResponse = $this->sendToMiEmpresa(
+            $isNotaVenta,
+            $tipoDocumento,
+            $fechaEmision,
+            $horaEmision,
+            $customerDocType,
+            $customerDocNumber,
+            $customerName,
+            $customerAddress,
+            $customerEmail,
+            $paymentMethod,
+            $total,
+            $subtotal,
+            $igv,
+            $documentItems
+        );
+        
+        if (isset($miEmpresaResponse['success']) && $miEmpresaResponse['success']) {
+            $documentId = $isNotaVenta ? 'NV01-' . rand(1000, 9999) : ($data['serie'] ?? 'B001') . '-' . rand(1000, 9999);
+            $externalId = uniqid('miemp_', true);
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Venta realizada con éxito en MiEmpresa',
+                'data' => [
+                    'document_id' => $documentId,
+                    'external_id' => $externalId,
+                    'total' => round($total, 2),
+                    'tipo_documento' => $tipoDocumento,
+                ],
+            ]);
+        }
+        
+        return response()->json([
+            'success' => false,
+            'message' => $miEmpresaResponse['error'] ?? 'Error al crear el documento en MiEmpresa',
+        ], 400);
+    }
+
+    private function sendToMiEmpresa(bool $isNotaVenta, string $tipoDocumento, string $fechaEmision, string $horaEmision, string $customerDocType, string $customerDocNumber, string $customerName, string $customerAddress, string $customerEmail, string $paymentMethod, float $total, float $subtotal, float $igv, array $documentItems): array
+    {
+        try {
+            Log::info('Sending to MiEmpresa', [
+                'isNotaVenta' => $isNotaVenta,
+                'total' => $total,
+            ]);
+            
+            if ($isNotaVenta) {
+                $miEmpresaPayload = [
+                    'serie_documento' => 'NV01',
+                    'numero_documento' => '#',
+                    'fecha_de_emision' => $fechaEmision,
+                    'hora_de_emision' => $horaEmision,
+                    'codigo_tipo_operacion' => '0101',
+                    'codigo_tipo_documento' => '80',
+                    'codigo_tipo_moneda' => 'PEN',
+                    'fecha_de_vencimiento' => $fechaEmision,
+                    'datos_del_cliente_o_receptor' => [
+                        'codigo_tipo_documento_identidad' => $customerDocType,
+                        'numero_documento' => $customerDocNumber,
+                        'apellidos_y_nombres_o_razon_social' => $customerName,
+                        'codigo_pais' => 'PE',
+                        'direccion' => $customerAddress,
+                        'correo_electronico' => $customerEmail,
+                    ],
+                    'totales' => [
+                        'total_operaciones_gravadas' => round($total, 2),
+                        'total_igv' => 0,
+                        'total_venta' => round($total, 2),
+                    ],
+                    'items' => array_map(function($item) {
+                        return [
+                            'codigo_interno' => $item['item']['internal_id'] ?? 'P0001',
+                            'descripcion' => $item['item']['name'] ?? 'Producto',
+                            'cantidad' => $item['quantity'],
+                            'valor_unitario' => round($item['unit_value'], 2),
+                            'precio_unitario' => round($item['unit_price'], 2),
+                            'total_item' => round($item['total'], 2),
+                        ];
+                    }, $documentItems),
+                    'pagos' => [
+                        [
+                            'fecha_de_emision' => $fechaEmision,
+                            'codigo_metodo_pago' => $paymentMethod,
+                            'monto' => round($total, 2),
+                        ]
+                    ],
+                ];
+                
+                $response = $this->miEmpresaApi->createSaleNote($miEmpresaPayload);
+                Log::info('MiEmpresa Sale Note Response', ['response' => $response]);
+                return $response;
+            } else {
+                $serie = 'B001';
+                
+                $miEmpresaPayload = [
+                    'serie_documento' => $serie,
+                    'numero_documento' => '#',
+                    'fecha_de_emision' => $fechaEmision,
+                    'hora_de_emision' => $horaEmision,
+                    'codigo_tipo_operacion' => '0101',
+                    'codigo_tipo_documento' => $tipoDocumento,
+                    'codigo_tipo_moneda' => 'PEN',
+                    'fecha_de_vencimiento' => $fechaEmision,
+                    'datos_del_cliente_o_receptor' => [
+                        'codigo_tipo_documento_identidad' => $customerDocType,
+                        'numero_documento' => $customerDocNumber,
+                        'apellidos_y_nombres_o_razon_social' => $customerName,
+                        'codigo_pais' => 'PE',
+                        'direccion' => $customerAddress,
+                        'correo_electronico' => $customerEmail,
+                    ],
+                    'totales' => [
+                        'total_operaciones_gravadas' => round($subtotal, 2),
+                        'total_igv' => round($igv, 2),
+                        'total_venta' => round($total, 2),
+                    ],
+                    'items' => array_map(function($item) {
+                        return [
+                            'codigo_interno' => $item['item']['internal_id'] ?? 'P0001',
+                            'descripcion' => $item['item']['name'] ?? 'Producto',
+                            'cantidad' => $item['quantity'],
+                            'valor_unitario' => round($item['unit_value'], 2),
+                            'precio_unitario' => round($item['unit_price'], 2),
+                            'total_item' => round($item['total'], 2),
+                        ];
+                    }, $documentItems),
+                    'pagos' => [
+                        [
+                            'fecha_de_emision' => $fechaEmision,
+                            'codigo_metodo_pago' => $paymentMethod,
+                            'monto' => round($total, 2),
+                        ]
+                    ],
+                ];
+                
+                $response = $this->miEmpresaApi->createDocument($miEmpresaPayload);
+                Log::info('MiEmpresa Document Response', ['response' => $response]);
+                return $response;
+            }
+        } catch (\Exception $e) {
+            Log::error('Error sending to MiEmpresa', ['error' => $e->getMessage()]);
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+}

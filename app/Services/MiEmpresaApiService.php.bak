@@ -1,0 +1,80 @@
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Http;
+
+class MiEmpresaApiService
+{
+    private ?string $baseUrl;
+    private ?string $token;
+
+    public function __construct()
+    {
+        $this->baseUrl = config('miempresa.base_url', 'http://miempresa.pro-8-2026.test');
+        $this->token = config('miempresa.token', '');
+    }
+
+    private function headers(): array
+    {
+        $headers = [
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+        ];
+        
+        if ($this->token) {
+            $headers['Authorization'] = 'Bearer ' . $this->token;
+        }
+        
+        return $headers;
+    }
+
+    public function get(string $endpoint, array $params = []): array
+    {
+        try {
+            $response = Http::withHeaders($this->headers())
+                ->timeout(config('miempresa.timeout', 30))
+                ->get($this->baseUrl . $endpoint, $params);
+
+            return $response->successful() ? $response->json() : ['success' => false, 'error' => $response->body()];
+        } catch (\Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    public function post(string $endpoint, array $data = []): array
+    {
+        try {
+            $response = Http::withHeaders($this->headers())
+                ->timeout(config('miempresa.timeout', 30))
+                ->post($this->baseUrl . $endpoint, $data);
+
+            return $response->successful() ? $response->json() : ['success' => false, 'error' => $response->body()];
+        } catch (\Exception $e) {
+            return ['success' => false, 'error' => $e->getMessage()];
+        }
+    }
+
+    public function createVoucher(array $data): array
+    {
+        return $this->post('/vouchers/create', $data);
+    }
+
+    public function getVouchersByCustomer(string $customerDoc): array
+    {
+        return $this->get('/vouchers/customer/' . $customerDoc);
+    }
+
+    public function getVoucherBalance(string $customerDoc): array
+    {
+        return $this->get('/vouchers/balance/' . $customerDoc);
+    }
+
+    public function discountVoucher(int $voucherId, float $amount): array
+    {
+        return $this->post('/vouchers/discount', [
+            'voucher_id' => $voucherId,
+            'amount' => $amount,
+        ]);
+    }
+}
