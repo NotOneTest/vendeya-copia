@@ -69,25 +69,35 @@ class PosController extends Controller
     private function getCustomersFromApi()
     {
         try {
-            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy;charset=utf8", "root", "");
+            // Use direct database connection like products
+            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy_miempresa;charset=utf8", "root", "");
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
             
-            $stmt = $pdo->query("SELECT id, name, identity_document_type_id as document_type, number as document_number FROM persons WHERE type = 'customers' ORDER BY id DESC LIMIT 100");
+            $stmt = $pdo->query("SELECT id, name, identity_document_type_id, number FROM persons WHERE type = 'customers' ORDER BY id DESC LIMIT 100");
             $customers = $stmt->fetchAll(\PDO::FETCH_ASSOC);
             
-            return collect($customers)->map(function ($item) {
+            Log::info('Customers from MiEmpresa DB', ['count' => count($customers)]);
+            
+            return array_map(function ($item) {
                 return [
                     'id' => $item['id'],
                     'name' => $item['name'],
-                    'document_type' => $item['document_type'] ?? '',
-                    'document_number' => $item['document_number'] ?? '',
-                    'document' => $item['document_type'] . ': ' . $item['document_number'],
+                    'number' => $item['number'] ?? '',
+                    'identity_document_type_id' => $item['identity_document_type_id'] ?? '',
+                    'document' => ($item['identity_document_type_id'] ?? '') . ': ' . ($item['number'] ?? ''),
                 ];
-            })->toArray();
+            }, $customers);
         } catch (\Exception $e) {
             Log::error('Error fetching customers from DB: ' . $e->getMessage());
         }
-        return [];
+        return $this->getFallbackCustomers();
+    }
+    
+    private function getFallbackCustomers()
+    {
+        return [
+            ['id' => 1, 'name' => 'Clientes - Varios', 'number' => '99999999', 'identity_document_type_id' => '0', 'document' => '0: 99999999'],
+        ];
     }
 
     public function createSale(Request $request)

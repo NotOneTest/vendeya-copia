@@ -163,22 +163,25 @@ class MiEmpresaApiService
 
     public function getCustomers(array $params = []): array
     {
-        // Use the public endpoint for customers (no auth required)
-        $result = $this->get('/public/document/customers', $params);
+        // Use the API endpoint for customers (with auth)
+        $result = $this->get('/api/persons/customers', $params);
 
         Log::info('MiEmpresa getCustomers result', ['result_preview' => substr(json_encode($result), 0, 500)]);
         
-        Log::info('MiEmpresa getCustomers result', ['result' => substr(json_encode($result), 0, 500)]);
+        // The API returns: {"customers": [...]} or {"data": [...]}
+        if (is_array($result) && isset($result['customers']) && is_array($result['customers'])) {
+            return $result['customers'];
+        }
         
         if (is_array($result) && isset($result['data']) && is_array($result['data'])) {
-            return ['data' => $result['data']];
+            return $result['data'];
         }
         
         if (is_array($result) && count($result) > 0) {
-            return ['data' => $result];
+            return $result;
         }
         
-        return ['data' => []];
+        return [];
     }
 
     public function getTenantProducts(array $params = []): array
