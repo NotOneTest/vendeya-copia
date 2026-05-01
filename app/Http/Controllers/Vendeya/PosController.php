@@ -101,9 +101,16 @@ class PosController extends Controller
 
     public function createSale(Request $request)
     {
-        $data = $request->all();
-        $documentType = $data['document_type'] ?? 'nv';
-        
+        try {
+            // Registrar datos recibidos para debug
+            Log::info('createSale called', ['data' => $request->all()]);
+            
+            $this->ensureAuthenticated();
+            
+            $data = $request->all();
+            $documentType = $data['document_type'] ?? 'nv';
+            
+        // Si es tipo vale, usar createValeSale
         if ($documentType === 'vale') {
             return $this->createValeSale($data);
         }
@@ -223,6 +230,13 @@ class PosController extends Controller
             'success' => false,
             'message' => $miEmpresaResponse['error'] ?? 'Error al crear el documento en MiEmpresa',
         ], 400);
+        } catch (\Exception $e) {
+            Log::error('Error in createSale', ['error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Error en el servidor: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     private function sendToMiEmpresa(bool $isNotaVenta, string $tipoDocumento, string $fechaEmision, string $horaEmision, string $customerDocType, string $customerDocNumber, string $customerName, string $customerAddress, string $customerEmail, string $paymentMethod, float $total, float $subtotal, float $igv, array $documentItems): array
@@ -425,7 +439,87 @@ class PosController extends Controller
 
     private function createValeSale($data)
     {
-        return response()->json(['success' => false, 'error' => 'Vale sale not implemented'], 501);
+        try {
+            Log::info('createValeSale called', ['data' => $data]);
+            $this->ensureAuthenticated();
+             
+            $items = $data['items'] ?? [];
+            $paymentMethod = $data['payment_method'] ?? '05'; // Vale de Venta
+            $total = 0;
+            foreach ($items as $item) {
+                $total += floatval($item['price'] ?? 0) * floatval($item['quantity'] ?? 1);
+            }
+            
+            // Obtener customer_id del request
+            $customerId = null;
+            if (isset($data['customer_id']) && is_numeric($data['customer_id']) && $data['customer_id'] > 0) {
+                $customerId = intval($data['customer_id']);
+                Log::info('Using customer_id from request', ['customerId' => $customerId]);
+            } else {
+                // Buscar por número de documento
+                $customerDoc = $data['customer_doc'] ?? ($data['customer']['number'] ?? '00000000');
+                Log::info('Searching customer by doc', ['customerDoc' => $customerDoc]);
+                $customersResult = $this->miEmpresaApi->getCustomers();
+                if (isset($customersResult['data']['customers'])) {
+                    foreach ($customersResult['data']['customers'] as $c) {
+                        if (($c['number'] ?? '') === $customerDoc) {
+                            $customerId = $c['id'] ?? null;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (!$customerId) {
+                // Crear cliente si no existe
+                $customerName = $data['customer_name'] ?? ($data['customer']['name'] ?? 'Cliente');
+                $customerDoc = $data['customer_doc'] ?? '00000000';
+                $newCustomer = $this->miEmpresaApi->createCustomer([
+                    'tipo_documento' => '1',
+                    'numero_documento' => $customerDoc,
+                    'nombres' => $customerName,
+                    'direccion' => '',
+                ]);
+                $customerId = $newCustomer['data']['id'] ?? null;
+            }
+            
+            if (!$customerId) {
+                return response()->json(['success' => false, 'message' => 'No se pudo obtener el ID del cliente'], 400);
+            }
+            
+            $payload = [
+                'customer_id' => $customerId,
+                'total' => $total,
+                'series' => $data['serie'] ?? 'V001', // Usar serie del request
+                'number' => '#',
+                'date_of_issue' => now()->format('Y-m-d'),
+                'time_of_issue' => now()->format('H:i:s'),
+                'plate_number' => $data['plate'] ?? null,
+            ];
+            
+            Log::info('Creating voucher', ['payload' => $payload]);
+            $response = $this->miEmpresaApi->createVoucher($payload);
+            Log::info('Voucher creation response', ['response' => $response]);
+            
+            if (isset($response['success']) && $response['success']) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Vale creado exitosamente',
+                    'data' => $response['data'] ?? []
+                ]);
+            }
+            
+            return response()->json([
+                'success' => false,
+                'message' => $response['error'] ?? 'Error al crear vale',
+            ], 400);
+        } catch (\Exception $e) {
+            Log::error('Error creating vale sale', ['error' => $e->getMessage()]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Error: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     private function getCustomerData($customerId)

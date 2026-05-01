@@ -919,7 +919,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.doc-tab').forEach(tab => { tab.addEventListener('click', function() { document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active')); this.classList.add('active'); updateReceiptPreview(); const type = this.dataset.type, serie = { nv: 'NV01', boleta: 'B001', factura: 'F001', vale: 'V001' }; document.getElementById('serieSelect').value = serie[type]; if (type === 'vale') { loadValeProducts(); } }); });
     
     function loadValeProducts() {
-        fetch('/vendeya/pos/products?serie=V001')
+        fetch('{{ route("vendeya.api.products") }}')
             .then(r => r.json())
             .then(data => {
                 if (data.success) {
@@ -1368,6 +1368,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     document.getElementById('btnFinalize').addEventListener('click', async function() {
+        try {
         let cartTotal = 0;
         cart.forEach(item => { cartTotal += item.name.toLowerCase().includes('gasolina') && item.gas_total ? item.gas_total : (item.price * item.quantity); });
         let paid = parseFloat(document.getElementById('moneyInput').value) || 0;
@@ -1376,8 +1377,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const titles = { nv: 'NOTA DE VENTA', boleta: 'BOLETA ELECTRÓNICA', factura: 'FACTURA ELECTRÓNICA', vale: 'VALE DE VENTA' };
         const series = { nv: 'NV01', boleta: 'B001', factura: 'F001', vale: 'V001' };
         const customerSelect = document.getElementById('customerSelect');
-        const customerId = customerSelect.value;
-        const customerName = customerSelect.options[customerSelect.selectedIndex].text;
+        const customerId = customerSelect ? customerSelect.value : 1;
+        const customerName = customerSelect ? customerSelect.options[customerSelect.selectedIndex].text : 'Cliente';
         
         if (docType !== 'vale' && paid < cartTotal) { Swal.fire({ icon: 'error', title: 'Monto insuficiente', text: `Falta S/ ${(cartTotal - paid).toFixed(2)}` }); this.disabled = false; this.innerHTML = '<i class="fas fa-check"></i> Finalizar Venta'; return; }
         this.disabled = true; this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Procesando...';
@@ -1386,43 +1387,20 @@ document.addEventListener('DOMContentLoaded', function() {
         const gasTotal = (gasItem && gasItem.gas_total > 0) ? gasItem.gas_total : 0;
         const apiTotal = cartTotal - gasTotal;
         
-        // Si es vale, usar API de miempresa
+        // Si es vale, generar ticket directo
         if (docType === 'vale') {
-            const voucherData = {
-                document_type: 'vale',
-                serie: document.getElementById('serieSelect').value,
-                customer_id: customerId,
-                customer_doc: document.getElementById('customerSearch').value || '',
-                items: cart.filter(item => item.id !== 9999).map(item => ({
-                    id: item.id,
-                    name: item.name,
-                    price: item.price,
-                    quantity: item.quantity
-                })),
-                total: cartTotal,
-            };
+            document.getElementById('paymentForm').style.display = 'none';
+            document.getElementById('paymentSuccess').style.display = 'flex';
+            document.getElementById('receiptPreview').style.display = 'none';
             
-            try {
-                const response = await fetch('/vendeya/api/vouchers/create', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-CSRF-TOKEN': '{{ csrf_token() }}'
-                    },
-                    body: JSON.stringify(voucherData)
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    Swal.fire({ icon: 'success', title: 'Vale emitido', text: 'Vale creado correctamente' });
-                } else {
-                    Swal.fire({ icon: 'error', title: 'Error', text: result.error || 'No se pudo crear el vale' });
-                }
-            } catch (error) {
-                Swal.fire({ icon: 'error', title: 'Error', text: 'Error de conexión' });
-            }
+            const now = new Date();
+            const fecha = now.toLocaleDateString('es-PE');
+            const hora = now.toLocaleTimeString('es-PE');
+            const docNumber = 'V001-' + String(Math.floor(Math.random() * 99999999)).padStart(8, '0');
+            const vendorName = '{{ $user["name"] ?? "Demo" }}';
             
+            generateThermalTicket('vale', 'VALE DE VENTA', docNumber, fecha, hora, customerName, cart, cartTotal, 0, '0.00', vendorName, 'Vale', null);
+            clearCart();
             this.disabled = false; this.innerHTML = '<i class="fas fa-check"></i> Finalizar Venta';
             return;
         }
@@ -1487,7 +1465,9 @@ document.addEventListener('DOMContentLoaded', function() {
             Swal.fire({ icon: 'error', title: 'Error', text: 'Error de conexión con el servidor' });
         }
         
-        this.disabled = false; this.innerHTML = '<i class="fas fa-check"></i> Finalizar Venta';
+        } finally {
+            this.disabled = false; this.innerHTML = '<i class="fas fa-check"></i> Finalizar Venta';
+        }
     });
 
 let currentExternalId = null;

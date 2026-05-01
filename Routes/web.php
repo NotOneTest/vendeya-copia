@@ -32,5 +32,5 @@ Route::prefix('vendeya')->name('vendeya.')->group(function () {
     // Voucher routes
     Route::get('/api/vouchers/balance/{doc}', [PosController::class, 'getVoucherBalance'])->name('api.vouchers.balance');
     Route::post('/api/vouchers/discount', [PosController::class, 'discountVoucher'])->name('api.vouchers.discount');
-    Route::post('/api/vouchers/create', [PosController::class, 'createVoucher'])->name('api.vouchers.create');
+    Route::post('/api/vouchers/create', [PosController::class, 'createSale'])->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class])->name('api.vouchers.create');
 });
