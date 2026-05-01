@@ -365,6 +365,10 @@
                                     <span>SALDO:</span>
                                     <span>S/ 0.00</span>
                                 </div>
+                                <div class="preview-footer-row" id="previewVoucherBalanceRow" style="display: none; background: #d4edda; padding: 4px; border-radius: 4px;">
+                                    <span><i class="fas fa-ticket-alt"></i> SALDO VALE:</span>
+                                    <span id="previewVoucherBalance" style="font-weight: bold; color: #155724;">S/ 0.00</span>
+                                </div>
                             </div>
                             
                             <div class="preview-link">Para consultar el comprobante ingresa a https://factreadylite.fe-estudioscreativos.com/buscar</div>
@@ -1423,16 +1427,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 currentExternalId = result.data.external_id;
                 
-                const now = new Date(); 
-                const fecha = now.toLocaleDateString('es-PE'); 
+                const now = new Date();
+                const fecha = now.toLocaleDateString('es-PE');
                 const hora = now.toLocaleTimeString('es-PE');
                 const docNumber = result.data.document_id || (series[docType] + '-' + String(Math.floor(Math.random() * 99999999)).padStart(8, '0'));
                 const change = (paid - cartTotal).toFixed(2);
                 const vendorName = '{{ $user["name"] ?? "Demo" }}';
                 const paymentMethod = document.getElementById('paymentMethodSelect');
                 const paymentMethodText = paymentMethod.options[paymentMethod.selectedIndex].text;
-                
-                generateThermalTicket(docType, titles[docType], docNumber, fecha, hora, customerName, cart, cartTotal, paid, change, vendorName, paymentMethodText);
+
+                generateThermalTicket(docType, titles[docType], docNumber, fecha, hora, customerName, cart, cartTotal, paid, change, vendorName, paymentMethodText, currentVoucherBalance);
                 
                 if (result.data.document_data) {
                     currentDocumentData = result.data.document_data;
@@ -1454,7 +1458,7 @@ let currentExternalId = null;
     const apiDomain = '{{ $apiDomain }}';
     const logoUrl = '{{ $logo }}';
     
-    function generateThermalTicket(docType, docTitle, docNumber, fecha, hora, customerName, cartItems, total, paid, change, vendor, paymentMethod = 'Efectivo') {
+    function generateThermalTicket(docType, docTitle, docNumber, fecha, hora, customerName, cartItems, total, paid, change, vendor, paymentMethod = 'Efectivo', voucherBalance = 0) {
         let ticket = `<div class="thermal-header">
             <img src="${logoUrl}" alt="FactReady Lite" style="max-width: 100px; height: auto; margin-bottom: 8px;">
             <div>RUC: 44444444444</div>
@@ -1475,23 +1479,30 @@ let currentExternalId = null;
         <div class="thermal-divider"></div>
         <div class="thermal-table-header">CANT.  UNIDAD  DESCRIPCIÓN  P.UNIT  TOTAL</div>
         <div class="thermal-divider"></div>`;
-        
+
         cartItems.forEach(item => {
             ticket += `<div class="thermal-item">
                 <span>${item.quantity} NIU ${item.name}</span>
                 <span>S/ ${(item.price * item.quantity).toFixed(2)}</span>
             </div>`;
         });
-        
+
         ticket += `<div class="thermal-divider"></div>
         <div class="thermal-total">TOTAL A PAGAR: S/ ${total.toFixed(2)}</div>
         <div class="thermal-divider"></div>
         <div class="thermal-payment">PAGOS:</div>
-        <div>${fecha.split('/').reverse().join('/')} - ${paymentMethod} - S/ ${paid.toFixed(2)}</div>
-        <div>&nbsp;</div>
+        <div>${fecha.split('/').reverse().join('/')} - ${paymentMethod} - S/ ${paid.toFixed(2)}</div>`;
+
+        // Mostrar saldo del vale si existe
+        if (voucherBalance > 0) {
+            ticket += `<div style="background: #d4edda; padding: 4px; border-radius: 4px; margin: 4px 0;">
+            <strong>SALDO VALE: S/ ${voucherBalance.toFixed(2)}</strong></div>`;
+        }
+
+        ticket += `<div>&nbsp;</div>
         <div>SALDO: S/ ${change}</div>
         <div class="thermal-link">Para consultar el comprobante ingresar a<br>https://factreadylite.fe-estudioscreativos.com/buscar</div>`;
-        
+
         document.getElementById('thermalTicket').innerHTML = ticket;
     }
 
@@ -1645,16 +1656,22 @@ let currentExternalId = null;
     }
     document.getElementById('btnBackForm').addEventListener('click', function() { document.getElementById('pdfPreview').style.display = 'none'; document.getElementById('paymentSuccess').style.display = 'flex'; });
 
-    function resetPaymentForm() { 
-        document.getElementById('paymentForm').style.display = 'block'; 
-        document.getElementById('paymentSuccess').style.display = 'none'; 
-        document.getElementById('pdfPreview').style.display = 'none'; 
-        document.getElementById('receiptPreview').style.display = 'block'; 
-        document.getElementById('moneyInput').value = '0'; 
-        document.getElementById('plateInput').value = ''; 
-        document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active')); 
-        document.querySelector('.doc-tab').classList.add('active'); 
+    function resetPaymentForm() {
+        document.getElementById('paymentForm').style.display = 'block';
+        document.getElementById('paymentSuccess').style.display = 'none';
+        document.getElementById('pdfPreview').style.display = 'none';
+        document.getElementById('receiptPreview').style.display = 'block';
+        document.getElementById('moneyInput').value = '0';
+        document.getElementById('plateInput').value = '';
+        document.querySelectorAll('.doc-tab').forEach(t => t.classList.remove('active'));
+        document.querySelector('.doc-tab').classList.add('active');
         document.getElementById('changeAmount').textContent = 'S/ 0.00';
+        // Ocultar saldo del vale en la vista previa y reiniciar variable
+        currentVoucherBalance = 0;
+        const voucherBalanceRow = document.getElementById('previewVoucherBalanceRow');
+        if (voucherBalanceRow) {
+            voucherBalanceRow.style.display = 'none';
+        }
         
         let cartTotal = 0;
         cart.forEach(item => { cartTotal += item.name.toLowerCase().includes('gasolina') && item.gas_total ? item.gas_total : (item.price * item.quantity); });
@@ -2125,12 +2142,19 @@ let currentExternalId = null;
     const voucherCustomerDoc = document.getElementById('voucherCustomerDoc');
     const voucherBalance = document.getElementById('voucherBalance');
     const btnCheckVoucher = document.getElementById('btnCheckVoucher');
+    let currentVoucherBalance = 0; // Variable para almacenar el saldo del vale
 
     paymentMethodSelect.addEventListener('change', function() {
         if (this.value === '05') {
             voucherSection.style.display = 'block';
         } else {
             voucherSection.style.display = 'none';
+            // Ocultar saldo del vale si se cambia de método de pago
+            currentVoucherBalance = 0;
+            const voucherBalanceRow = document.getElementById('previewVoucherBalanceRow');
+            if (voucherBalanceRow) {
+                voucherBalanceRow.style.display = 'none';
+            }
         }
     });
 
@@ -2157,9 +2181,22 @@ let currentExternalId = null;
 
             if (result.success) {
                 voucherBalance.value = 'S/ ' + parseFloat(result.balance).toFixed(2);
+                currentVoucherBalance = parseFloat(result.balance); // Guardar saldo actual
+                // Actualizar vista previa con saldo del vale
+                const voucherBalanceRow = document.getElementById('previewVoucherBalanceRow');
+                const previewVoucherBalance = document.getElementById('previewVoucherBalance');
+                if (voucherBalanceRow && previewVoucherBalance) {
+                    voucherBalanceRow.style.display = 'flex';
+                    previewVoucherBalance.textContent = 'S/ ' + currentVoucherBalance.toFixed(2);
+                }
             } else {
                 Swal.fire({ icon: 'error', title: 'Error', text: result.error || 'No se pudo consultar el saldo' });
                 voucherBalance.value = 'S/ 0.00';
+                currentVoucherBalance = 0;
+                const voucherBalanceRow = document.getElementById('previewVoucherBalanceRow');
+                if (voucherBalanceRow) {
+                    voucherBalanceRow.style.display = 'none';
+                }
             }
         } catch (error) {
             Swal.fire({ icon: 'error', title: 'Error', text: 'Error de conexión' });
