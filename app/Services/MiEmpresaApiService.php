@@ -123,7 +123,9 @@ class MiEmpresaApiService
 
     public function getVoucherBalance(string $customerDoc): array
     {
-        return $this->get('/vouchers/balance/' . $customerDoc);
+        $result = $this->get('/vouchers/balance/' . $customerDoc);
+        Log::info('MiEmpresa getVoucherBalance result', ['doc' => $customerDoc, 'result' => $result]);
+        return $result;
     }
 
     public function discountVoucher($voucherId, $amount): array
@@ -202,6 +204,29 @@ class MiEmpresaApiService
             }
         }
         
+        return [];
+    }
+
+    public function getTenantCustomers(array $params = []): array
+    {
+        $result = $this->get('/persons/customers', $params);
+
+        Log::info('MiEmpresa getTenantCustomers result', ['result_preview' => substr(json_encode($result), 0, 500)]);
+
+        if (is_array($result)) {
+            if (isset($result['data']) && is_array($result['data'])) {
+                return $result['data'];
+            }
+
+            if (isset($result['success']) && $result['success'] === true && isset($result['data'])) {
+                return is_array($result['data']) ? $result['data'] : [];
+            }
+
+            if (count($result) > 0 && is_array($result[0])) {
+                return $result;
+            }
+        }
+
         return [];
     }
 }

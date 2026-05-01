@@ -26,12 +26,22 @@ class PosController extends Controller
         $logo = asset('images/logo.png');
         $apiDomain = config('services.miempresa.domain', 'https://api.miempresa.pe');
 
+        $this->ensureAuthenticated();
+
         $products = $this->getProductsFromApi();
         $allCategories = collect($products)->pluck('category')->unique()->filter()->values()->toArray();
         $customers = $this->getCustomersFromApi();
         $cashOpened = Session::get('cash_opened', false);
 
         return view('vendeya.pos.dashboard', compact('user', 'logo', 'apiDomain', 'products', 'allCategories', 'customers', 'cashOpened'));
+    }
+
+    private function ensureAuthenticated()
+    {
+        $token = Session::get('miempresa_token');
+        if (empty($token)) {
+            $this->miEmpresaApi->login('admin@miempresa.com', '123456');
+        }
     }
 
     private function getProductsFromApi()
@@ -69,21 +79,20 @@ class PosController extends Controller
     private function getCustomersFromApi()
     {
         try {
-            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy;charset=utf8", "root", "");
+            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy_miempresa;charset=utf8", "root", "");
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
             
-            $stmt = $pdo->query("SELECT id, name, identity_document_type_id as document_type, number as document_number FROM persons WHERE type = 'customers' ORDER BY id DESC LIMIT 100");
+            $stmt = $pdo->query("SELECT id, name, identity_document_type_id, number FROM persons WHERE type = 'customers' ORDER BY id DESC LIMIT 100");
             $customers = $stmt->fetchAll(\PDO::FETCH_ASSOC);
             
-            return collect($customers)->map(function ($item) {
+            return array_map(function ($item) {
                 return [
                     'id' => $item['id'],
                     'name' => $item['name'],
-                    'document_type' => $item['document_type'] ?? '',
-                    'document_number' => $item['document_number'] ?? '',
-                    'document' => $item['document_type'] . ': ' . $item['document_number'],
+                    'number' => $item['number'] ?? '',
+                    'document_type' => $item['identity_document_type_id'] ?? '',
                 ];
-            })->toArray();
+            }, $customers);
         } catch (\Exception $e) {
             Log::error('Error fetching customers from DB: ' . $e->getMessage());
         }
@@ -371,10 +380,35 @@ class PosController extends Controller
 
     public function getVoucherBalance($doc)
     {
-        $response = $this->miEmpresaApi->getVoucherBalance($doc);
-        return response()->json($response);
-    }
+        try {
+            $pdo = new \PDO("mysql:host=127.0.0.1;port=3306;dbname=tenancy_miempresa;charset=utf8", "root", "");
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
 
+            $stmt = $pdo->prepare("SELECT id FROM persons WHERE type = 'customers' AND number = ? LIMIT 1");
+            $stmt->execute([$doc]);
+            $customer = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if (!$customer) {
+                return response()->json(['success' => true, 'balance' => 0, 'message' => 'Cliente no encontrado']);
+            }
+
+            $stmt2 = $pdo->prepare("SELECT COALESCE(SUM(total_balance), 0) as balance FROM vouchers WHERE customer_id = ? AND active = 1");
+            $stmt2->execute([$customer['id']]);
+            $result = $stmt2->fetch(\PDO::FETCH_ASSOC);
+
+            $balance = floatval($result['balance'] ?? 0);
+
+            return response()->json([
+                'success' => true,
+                'balance' => $balance,
+                'message' => $balance > 0 ? 'Saldo disponible' : 'Sin saldo'
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching voucher balance from DB: ' . $e->getMessage());
+            return response()->json(['success' => false, 'balance' => 0, 'error' => $e->getMessage()]);
+        }
+            }
+    
     public function discountVoucher(Request $request)
     {
         $data = $request->all();

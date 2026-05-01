@@ -29,22 +29,8 @@ Route::prefix('vendeya')->name('vendeya.')->group(function () {
     
     Route::get('/api/document/{externalId}', [PosController::class, 'getDocumentByExternalId'])->name('api.document');
     
-    // Voucher routes (connects to miempresa)
+    // Voucher routes
     Route::get('/api/vouchers/balance/{doc}', [PosController::class, 'getVoucherBalance'])->name('api.vouchers.balance');
     Route::post('/api/vouchers/discount', [PosController::class, 'discountVoucher'])->name('api.vouchers.discount');
     Route::post('/api/vouchers/create', [PosController::class, 'createVoucher'])->name('api.vouchers.create');
-    
-    // Test route for MiEmpresa API
-    Route::get('/test-miempresa', function() {
-        $service = new \App\Services\MiEmpresaApiService();
-        $response = $service->getProducts();
-        return response()->json($response);
-    });
-    
-    // Test route for MiEmpresa Customers API
-    Route::get('/test-miempresa-customers', function() {
-        $service = new \App\Services\MiEmpresaApiService();
-        $response = $service->getCustomers();
-        return response()->json($response);
-    });
-}); 
+});

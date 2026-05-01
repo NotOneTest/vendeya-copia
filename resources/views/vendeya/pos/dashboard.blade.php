@@ -1134,6 +1134,43 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
         document.getElementById('previewDocLabel').textContent = docLabel;
+        
+        // Consultar saldo del vale dinámicamente
+        const voucherBalanceRow = document.getElementById('previewVoucherBalanceRow');
+        const previewVoucherBalance = document.getElementById('previewVoucherBalance');
+        const voucherBalanceInput = document.getElementById('voucherBalance');
+        
+        if (customerDoc && !isAllZeros) {
+            fetch(`{{ route('vendeya.api.vouchers.balance', ['doc' => '__DOC__']) }}`.replace('__DOC__', customerDoc))
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Voucher balance response:', data);
+                    if (data.success && data.balance > 0) {
+                        if (voucherBalanceRow && previewVoucherBalance) {
+                            voucherBalanceRow.style.display = 'flex';
+                            previewVoucherBalance.textContent = parseFloat(data.balance).toFixed(2);
+                        }
+                        if (voucherBalanceInput) {
+                            voucherBalanceInput.value = 'S/ ' + parseFloat(data.balance).toFixed(2);
+                        }
+                    } else {
+                        if (voucherBalanceRow) {
+                            voucherBalanceRow.style.display = 'none';
+                        }
+                        if (voucherBalanceInput) {
+                            voucherBalanceInput.value = 'S/ 0.00';
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching voucher balance:', error);
+                    if (voucherBalanceRow) voucherBalanceRow.style.display = 'none';
+                    if (voucherBalanceInput) voucherBalanceInput.value = 'S/ 0.00';
+                });
+        } else {
+            if (voucherBalanceRow) voucherBalanceRow.style.display = 'none';
+            if (voucherBalanceInput) voucherBalanceInput.value = 'S/ 0.00';
+        }
     });
     
     document.getElementById('serieSelect').addEventListener('change', function() {
@@ -2169,7 +2206,7 @@ let currentExternalId = null;
         this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Consultando...';
 
         try {
-            const response = await fetch('/vendeya/api/vouchers/balance/' + doc, {
+            const response = await fetch(`{{ route('vendeya.api.vouchers.balance', ['doc' => '__DOC__']) }}`.replace('__DOC__', doc), {
                 method: 'GET',
                 headers: {
                     'Accept': 'application/json',
